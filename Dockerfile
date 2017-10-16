@@ -1,36 +1,42 @@
-FROM centos:latest
-MAINTAINER Stefano Picozzi <StefanoPicozzi@gmail.com>
+FROM ubuntu
 
-RUN yum -y install epel-release && \
-    yum -y install R && \
-    yum -y install wget
+ENV CRAN_URL https://cloud.r-project.org/
 
-RUN wget https://download2.rstudio.org/rstudio-server-rhel-1.0.153-x86_64.rpm && \
-    yum -y install rstudio-server-rhel-1.0.153-x86_64.rpm
+RUN set -e \
+      && apt-get -y update \
+      && apt-get -y install apt-transport-https gdebi-core libapparmor1 libcurl4-openssl-dev libssl-dev libxml2-dev pandoc
 
-RUN yum -y install mysql ftp curl libcurl libcurl-devel libpng-devel mesa-libGL-devel && \
-    yum -y install mesa-libGLU-devel libpng-devel libxml2 libxml2-devel git openssl-devel && \
-    yum -y install libpq-dev postgresql-libs postgresql-devel
+RUN set -e \
+      && grep '^DISTRIB_CODENAME' /etc/lsb-release \
+        | cut -d = -f 2 \
+        | xargs -I {} echo "deb ${CRAN_URL}bin/linux/ubuntu {}/" \
+        | tee -a /etc/apt/sources.list \
+      && apt-key adv --keyserver keyserver.ubuntu.com --recv-keys E084DAB9 \
+      && apt-get -y update \
+      && apt-get -y upgrade \
+      && apt-cache -q search r-cran-* \
+        | awk '$1 !~ /^r-cran-r2jags$/ { p = p" "$1 } END{ print p }' \
+        | xargs apt-get -y install r-base \
+      && apt-get clean
 
-RUN cd /opt && \
-    wget https://d3kbcqa49mib13.cloudfront.net/spark-2.1.0-bin-hadoop2.7.tgz && \
-    gunzip spark-2.1.0-bin-hadoop2.7.tgz && \
-    tar xvf spark-2.1.0-bin-hadoop2.7.tar && \
-    mv spark-2.1.0-bin-hadoop2.7 spark
+RUN set -e \
+      && R -e "\
+      update.packages(ask = FALSE, repos = '${CRAN_URL}'); \
+      pkgs <- c('dbplyr', 'devtools', 'docopt', 'doParallel', 'foreach', 'gridExtra', 'rmarkdown', 'tidyverse'); \
+      install.packages(pkgs = pkgs, dependencies = TRUE, repos = '${CRAN_URL}'); \
+      sapply(pkgs, require, character.only = TRUE);"
 
-RUN cd /opt/spark/jars && \
-    wget http://central.maven.org/maven2/org/apache/hadoop/hadoop-aws/2.7.3/hadoop-aws-2.7.3.jar && \
-    wget http://central.maven.org/maven2/com/amazonaws/aws-java-sdk/1.7.4/aws-java-sdk-1.7.4.jar
+RUN set -e \
+      && curl -sS https://s3.amazonaws.com/rstudio-server/current.ver \
+        | xargs -I {} curl -sS http://download2.rstudio.org/rstudio-server-{}-amd64.deb -o /tmp/rstudio.deb \
+      && gdebi -n /tmp/rstudio.deb \
+      && rm -rf /tmp/*
 
-RUN useradd guest && \
-    echo guest:guest | chpasswd && \
-    useradd rstudio && \
-    echo rstudio:rstudio | chpasswd && \
-    useradd admin && \
-    echo admin:admin | chpasswd
-
-USER root
+RUN set -e \
+      && useradd -m -d /home/rstudio rstudio \
+      && echo rstudio:rstudio \
+        | chpasswd
 
 EXPOSE 8787
-CMD /usr/lib/rstudio-server/bin/rserver --server-daemonize 0
 
+CMD ["/usr/lib/rstudio-server/bin/rserver", "--server-daemonize=0", "--server-app-armor-enabled=0"]
